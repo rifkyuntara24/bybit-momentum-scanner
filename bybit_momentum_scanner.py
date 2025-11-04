@@ -24,7 +24,7 @@ ACTIVE_END_HOUR = int(os.getenv("ACTIVE_END_HOUR", "6"))          # WIB (exclusi
 MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "1000"))
 BYBIT_CATEGORY = os.getenv("BYBIT_CATEGORY", "spot")              # spot/linear/etc
 
-BYBIT_URL = f"https://api.bybit.com/v5/market/tickers?category={BYBIT_CATEGORY}"
+BYBIT_URL = f"https://api.bytick.com/v5/market/tickers?category={BYBIT_CATEGORY}"
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # --- Logging setup ---
@@ -155,3 +155,4 @@ def main_loop():
 # --- Run ---
 if __name__ == "__main__":
     main_loop()
+
