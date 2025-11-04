@@ -34,15 +34,17 @@ TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 snapshots = {}
 last_alert = {}
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BybitMomentumScanner/1.0"})
+SESSION.headers.update({"User-Agent": "BybitMomentumScanner/1.1"})
 
 
 def send_telegram(text):
+    """Send message to Telegram"""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         st.warning("⚠️ Telegram config missing.")
         return False
     try:
-        r = SESSION.post(TELEGRAM_SEND_URL, data={"chat_id": CHAT_ID, "text": text})
+        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+        r = SESSION.post(TELEGRAM_SEND_URL, data=payload, timeout=10)
         return r.status_code == 200
     except Exception as e:
         st.error(f"Telegram send error: {e}")
@@ -50,7 +52,7 @@ def send_telegram(text):
 
 
 def signed_request(url):
-    """If you want to use API key for stability."""
+    """Bybit signed request (authentic)"""
     ts = str(int(time.time() * 1000))
     query = f"api_key={BYBIT_API_KEY}&timestamp={ts}"
     signature = hmac.new(BYBIT_API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
@@ -75,9 +77,25 @@ def is_active_wib(now_utc):
 
 
 def main_loop(stop_event):
+    """Main scanning loop"""
+    start_time = datetime.now(timezone.utc) + timedelta(hours=7)
+    send_telegram(f"🚀 *Bybit Momentum Scanner Started*\n"
+                  f"Status: Running...\n"
+                  f"Time (WIB): {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    last_heartbeat = time.time()
+
     st.info(f"🚀 Running Bybit Momentum Scanner ({BYBIT_CATEGORY})...")
+
     while not stop_event.is_set():
         now_utc = datetime.now(timezone.utc)
+
+        # Send heartbeat every 30 minutes
+        if time.time() - last_heartbeat > 1800:
+            send_telegram(f"⏱ *Still running...*\n"
+                          f"Last check: {(now_utc + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')} WIB")
+            last_heartbeat = time.time()
+
         if not is_active_wib(now_utc):
             st.write(f"🕒 Outside active hours ({ACTIVE_START_HOUR}-{ACTIVE_END_HOUR} WIB). Sleeping 5m...")
             time.sleep(300)
@@ -85,8 +103,8 @@ def main_loop(stop_event):
 
         tickers = fetch_bybit_tickers()
         now_epoch = int(time.time())
-
         st.write(f"Scanning {len(tickers)} tickers...")
+
         for t in tickers:
             try:
                 symbol = t.get("symbol")
@@ -113,7 +131,7 @@ def main_loop(stop_event):
                     if price_change_pct >= PRICE_CHANGE_PCT and vol_multiplier >= VOL_MULTIPLIER:
                         last_alert_time = last_alert.get(symbol, 0)
                         if now_epoch - last_alert_time >= WINDOW_SECONDS:
-                            msg = (f"🚀 Momentum Alert\n"
+                            msg = (f"🚀 *Momentum Alert*\n"
                                    f"{symbol}\n"
                                    f"Price: {last_price:.6f}\n"
                                    f"Δ{int(WINDOW_SECONDS/60)}m: {price_change_pct:.2f}%\n"
@@ -130,6 +148,8 @@ def main_loop(stop_event):
                 continue
 
         time.sleep(CHECK_INTERVAL)
+
+    send_telegram(f"🛑 *Bybit Momentum Scanner Stopped*\nTime: {(datetime.now(timezone.utc) + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')} WIB")
 
 
 # === Streamlit UI ===
