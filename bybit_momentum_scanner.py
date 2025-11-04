@@ -24,7 +24,12 @@ ACTIVE_END_HOUR = int(os.getenv("ACTIVE_END_HOUR", "6"))          # WIB (exclusi
 MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "1000"))
 BYBIT_CATEGORY = os.getenv("BYBIT_CATEGORY", "spot")              # spot/linear/etc
 
-BYBIT_URL = f"https://api.bytick.com/v5/market/tickers?category={BYBIT_CATEGORY}"
+# --- Constants ---
+BYBIT_URLS = [
+    f"https://api.bybit.com/v5/market/tickers?category={BYBIT_CATEGORY}",
+    f"https://api.bytick.com/v5/market/tickers?category={BYBIT_CATEGORY}",
+    f"https://api2.bybit.com/v5/market/tickers?category={BYBIT_CATEGORY}"
+]
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # --- Logging setup ---
@@ -43,7 +48,7 @@ def send_telegram(text):
         logger.warning("Telegram config missing. Skipping send.")
         return False
     try:
-        payload = {"chat_id": CHAT_ID, "text": text}
+        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
         r = SESSION.post(TELEGRAM_SEND_URL, data=payload, timeout=10)
         if r.status_code == 200:
             return True
@@ -56,23 +61,38 @@ def send_telegram(text):
 
 # --- Fetch Bybit Data ---
 def fetch_bybit_tickers():
-    try:
-        r = SESSION.get(BYBIT_URL, timeout=10)
-        r.raise_for_status()
-        j = r.json()
-        return j.get("result", {}).get("list", [])
-    except Exception as e:
-        logger.exception("Failed to fetch tickers: %s", e)
-        return []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json",
+        "Referer": "https://www.bybit.com/"
+    }
+
+    for url in BYBIT_URLS:
+        try:
+            r = SESSION.get(url, headers=headers, timeout=10)
+            if r.status_code == 403:
+                logger.warning("403 Forbidden on %s — trying next mirror...", url)
+                continue
+            r.raise_for_status()
+            j = r.json()
+            result = j.get("result", {}).get("list", [])
+            if not result:
+                logger.warning("⚠️ Empty result from Bybit: %s", j)
+            return result
+        except Exception as e:
+            logger.warning("Fetch failed from %s: %s", url, e)
+            continue
+
+    logger.error("❌ All Bybit endpoints failed.")
+    return []
 
 # --- Time filter ---
 def is_active_wib(now_utc):
     now_wib = now_utc + timedelta(hours=7)
     h = now_wib.hour
-    # untuk testing, aktif terus:
-    if True:
-        return True
-    # jika mau aktif hanya jam tertentu, hapus baris di atas dan gunakan di bawah:
+    # sementara aktif terus untuk testing
+    return True
+    # jika mau aktif hanya jam tertentu, pakai ini:
     # return ACTIVE_START_HOUR <= h < ACTIVE_END_HOUR
 
 def human_ts(ts=None):
@@ -81,7 +101,7 @@ def human_ts(ts=None):
 # --- Main Loop ---
 def main_loop():
     logger.info("Starting Bybit Momentum Scanner (category=%s)", BYBIT_CATEGORY)
-    send_telegram("✅ Scanner aktif! Bybit Momentum Scanner sudah berjalan 🚀")  # ✅ pesan konfirmasi
+    send_telegram("✅ Scanner aktif! Bybit Momentum Scanner sudah berjalan 🚀")
 
     while True:
         try:
@@ -155,4 +175,3 @@ def main_loop():
 # --- Run ---
 if __name__ == "__main__":
     main_loop()
-
