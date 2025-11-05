@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# bybit_momentum_scanner_signed.py
-# Requires: requests, python-dotenv
+# bybit_momentum_scanner.py
+# Requires: requests, python-dotenv, hmac, hashlib
 
 import os
 import time
@@ -11,10 +11,9 @@ import logging
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-# --- Load environment variables ---
+# === Load ENV ===
 load_dotenv()
 
-# --- CONFIG ---
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -27,42 +26,51 @@ VOL_MULTIPLIER = float(os.getenv("VOL_MULTIPLIER", "2.0"))
 MIN_TURNOVER = float(os.getenv("MIN_TURNOVER", "1000"))
 BYBIT_CATEGORY = os.getenv("BYBIT_CATEGORY", "spot")
 
+# === Constants ===
 BYBIT_URL = "https://api.bybit.com"
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-# --- Logging setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("scanner")
 
-# --- State ---
 snapshots = {}
 last_alert = {}
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BybitMomentumScanner/2.0"})
 
-# --- Sign Bybit Request ---
-def sign_request(params: dict) -> dict:
-    """Sign the request params using HMAC SHA256"""
-    if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-        raise ValueError("Bybit API key/secret not found in environment variables.")
-
-    timestamp = str(int(time.time() * 1000))
+# === AUTH SIGN ===
+def bybit_request(endpoint, params=None):
+    if params is None:
+        params = {}
+    ts = str(int(time.time() * 1000))
+    recv_window = "5000"
     params_str = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-    pre_sign = timestamp + BYBIT_API_KEY + "5000" + params_str
-    signature = hmac.new(
-        BYBIT_API_SECRET.encode("utf-8"), pre_sign.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    signature_payload = ts + BYBIT_API_KEY + recv_window + params_str
+    signature = hmac.new(BYBIT_API_SECRET.encode("utf-8"), signature_payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     headers = {
         "X-BAPI-API-KEY": BYBIT_API_KEY,
         "X-BAPI-SIGN": signature,
-        "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-RECV-WINDOW": "5000",
-        "Content-Type": "application/json",
+        "X-BAPI-SIGN-TYPE": "2",
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv_window,
     }
-    return headers
 
-# --- Telegram Send ---
+    url = BYBIT_URL + endpoint
+    try:
+        r = SESSION.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("retCode") == 0:
+            return j.get("result", {}).get("list", [])
+        else:
+            logger.error("Bybit error: %s", j)
+            return []
+    except Exception as e:
+        logger.exception("Bybit fetch error: %s", e)
+        return []
+
+# === Telegram ===
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         logger.warning("Telegram config missing. Skipping send.")
@@ -79,36 +87,19 @@ def send_telegram(text):
         logger.exception("Telegram send exception: %s", e)
         return False
 
-# --- Fetch Bybit Data (Signed) ---
-def fetch_bybit_tickers():
-    try:
-        endpoint = "/v5/market/tickers"
-        params = {"category": BYBIT_CATEGORY}
-        headers = sign_request(params)
-        r = SESSION.get(BYBIT_URL + endpoint, params=params, headers=headers, timeout=10)
-        r.raise_for_status()
-        j = r.json()
-        return j.get("result", {}).get("list", [])
-    except Exception as e:
-        logger.exception("Failed to fetch tickers: %s", e)
-        return []
-
-# --- Time filter ---
-def human_ts(ts=None):
-    return datetime.fromtimestamp(ts or time.time()).strftime("%Y-%m-%d %H:%M:%S")
-
-# --- Main Loop ---
+# === Main Loop ===
 def main_loop():
-    logger.info("Starting Bybit Momentum Scanner (category=%s)", BYBIT_CATEGORY)
-    send_telegram("✅ Scanner aktif dengan API key! Bybit Momentum Scanner berjalan 🚀")
+    logger.info("Starting Bybit Momentum Scanner (auth mode, category=%s)", BYBIT_CATEGORY)
+    send_telegram("✅ Scanner aktif (API Key) — Bybit Momentum Scanner berjalan 🚀")
 
     while True:
         try:
-            now_utc = datetime.now(timezone.utc)
-            tickers = fetch_bybit_tickers()
+            tickers = bybit_request("/v5/market/tickers", {"category": BYBIT_CATEGORY})
             now_epoch = int(time.time())
+            now_utc = datetime.now(timezone.utc)
 
             logger.info("Scanning %d tickers ...", len(tickers))
+
             for t in tickers:
                 try:
                     symbol = t.get("symbol")
@@ -119,7 +110,8 @@ def main_loop():
                     turnover24h = float(t.get("turnover24h", 0) or 0)
 
                     if turnover24h < MIN_TURNOVER:
-                        snapshots[symbol] = {"price": last_price, "vol": turnover24h, "ts": now_epoch}
+                        if symbol not in snapshots:
+                            snapshots[symbol] = {"price": last_price, "vol": turnover24h, "ts": now_epoch}
                         continue
 
                     if symbol not in snapshots:
@@ -165,6 +157,6 @@ def main_loop():
             logger.exception("Unexpected error main loop: %s", e)
             time.sleep(10)
 
-# --- Run ---
+
 if __name__ == "__main__":
     main_loop()
